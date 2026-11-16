@@ -147,3 +147,98 @@ export const parseSizeToBytes = (input = "") => {
 
   return Math.round(value * multipliers[unit]);
 };
+
+// ======================================
+// 🟢 BULK UPLOAD & SSE HELPERS
+// ======================================
+
+/**
+ * Bulk upload multiple files at once.
+ * 
+ * @param {File[]} files - Array of File objects
+ * @param {string} location - Target folder path (e.g., "images")
+ * @param {string} conflictAction - "cancel" | "replace" | "rename"
+ * @param {string} uploadId - Unique ID for SSE tracking
+ * @returns {Promise<Object>} Result with { success: [], skipped: [], failed: [] }
+ */
+export async function bulkApiRequest(files, location = "", conflictAction = "cancel", uploadId = "") {
+  const formData = new FormData();
+  
+  // Append all files under "files" key (matches backend multer config)
+  files.forEach((file) => formData.append("files", file));
+  
+  formData.append("location", location);
+  formData.append("conflictAction", conflictAction);
+  if (uploadId) formData.append("uploadId", uploadId);
+
+  const response = await fetch(`${API_BASE_URL}${MEDIA_API}/bulk-upload`, {
+    method: "POST",
+    body: formData,
+    // Note: Do NOT set Content-Type header. Browser auto-sets it for FormData.
+  });
+
+  const result = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const error = new Error(
+      result.message || `Bulk upload failed (${response.status}).`
+    );
+    error.status = response.status;
+    error.code = result.code;
+    error.data = result.data;
+    throw error;
+  }
+
+  return result;
+}
+
+/**
+ * Connect to SSE endpoint for real-time upload progress.
+ * 
+ * @param {string} uploadId - Unique ID generated on frontend (must match backend)
+ * @param {Function} onMessage - Callback receiving progress data:
+ *   {
+ *     status: "processing" | "completed" | "error" | "waiting",
+ *     totalFiles: number,
+ *     processedFiles: number,
+ *     currentFile: string,
+ *     currentFileProgress: number, // 0-100
+ *     message: string
+ *   }
+ * @param {Function} onError - Optional error callback
+ * @returns {Function} Cleanup function to close SSE connection
+ */
+export function connectUploadProgress(uploadId, onMessage, onError) {
+  // Create EventSource pointing to SSE endpoint
+  const eventSource = new EventSource(
+    `${API_BASE_URL}${MEDIA_API}/upload-progress/${uploadId}`
+  );
+
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (onMessage) onMessage(data);
+    } catch (err) {
+      console.error("SSE parse error:", err);
+    }
+  };
+
+  eventSource.onerror = (err) => {
+    console.error("SSE connection error:", err);
+    if (onError) onError(err);
+    // Don't auto-close here; EventSource auto-reconnects
+  };
+
+  // Return cleanup function
+  return () => {
+    eventSource.close();
+  };
+}
+
+/**
+ * Generate a unique upload ID for SSE tracking.
+ * Combines timestamp + random string to avoid collisions.
+ */
+export const generateUploadId = () => {
+  return `bulk_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+};

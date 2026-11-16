@@ -10,6 +10,7 @@ import FolderModal from "./components/FolderModal";
 import UploadModal from "./components/UploadModal";
 import ConflictModal from "./components/ConflictModal";
 import FormatsModal from "./components/FormatsModal";
+// import BulkConflictModal from "./components/BulkConflictModal"; // Agar aap banate hain toh baad mein use karenge
 
 import {
   API_BASE_URL,
@@ -18,7 +19,10 @@ import {
   getContents,
   getFormats,
   joinLocation,
-  bytesToHuman, // 🔴 YEH IMPORT ADD KIYA HAI
+  bytesToHuman,
+  bulkApiRequest,
+  connectUploadProgress,
+  generateUploadId,
 } from "./utils/mediaHelpers";
 
 export default function Media() {
@@ -39,10 +43,18 @@ export default function Media() {
   const [folderModalOpen, setFolderModalOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
 
+  // Upload States
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
-  const [selectedFile, setSelectedFile] = useState(null);
+  const [isBulkMode, setIsBulkMode] = useState(false); // 🟢 Track single vs bulk
+  const [selectedFiles, setSelectedFiles] = useState([]); // 🟢 Ab array use kar rahe hain
   const [customFileName, setCustomFileName] = useState("");
+  
+  // 🟢 Progress State for Bulk SSE
+  const [uploadProgress, setUploadProgress] = useState({
+    processed: 0, total: 0, currentFile: "", percent: 0, message: ""
+  });
 
+  // Conflict States (Single Upload)
   const [conflictModalOpen, setConflictModalOpen] = useState(false);
   const [conflictMessage, setConflictMessage] = useState("");
   const [pendingConflictFile, setPendingConflictFile] = useState(null);
@@ -53,16 +65,14 @@ export default function Media() {
   const fileInputRef = useRef(null);
 
   // ======================================
-  // LOAD MEDIA CONTENTS
+  // LOAD DATA
   // ======================================
   const loadContents = useCallback(async (targetLocation = "") => {
     setLoading(true);
     setError("");
     try {
       const query = new URLSearchParams({ location: targetLocation });
-      const response = await apiRequest(
-        `${MEDIA_API}/contents?${query.toString()}`
-      );
+      const response = await apiRequest(`${MEDIA_API}/contents?${query.toString()}`);
       setItems(getContents(response));
     } catch (err) {
       setItems([]);
@@ -90,7 +100,7 @@ export default function Media() {
   }, [loadFormats]);
 
   // ======================================
-  // FILTER + SORT
+  // FILTER + SORT & BREADCRUMBS
   // ======================================
   const filteredItems = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -99,9 +109,7 @@ export default function Media() {
       return (a.name || "").localeCompare(b.name || "");
     });
     if (!term) return sorted;
-    return sorted.filter((item) =>
-      (item.name || "").toLowerCase().includes(term)
-    );
+    return sorted.filter((item) => (item.name || "").toLowerCase().includes(term));
   }, [items, search]);
 
   const breadcrumbs = useMemo(() => {
@@ -116,67 +124,135 @@ export default function Media() {
   }, [location]);
 
   // ======================================
-  // UPLOAD
+  // UPLOAD OPEN HANDLERS
   // ======================================
-  const openUploadModal = () => {
-    setSelectedFile(null);
+  const openSingleUpload = () => {
+    setIsBulkMode(false);
+    setSelectedFiles([]);
     setCustomFileName("");
     setUploadModalOpen(true);
     setError("");
     setMessage("");
+    setUploadProgress({ processed: 0, total: 0, currentFile: "", percent: 0, message: "" });
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const submitUpload = async (conflictAction = "cancel") => {
-    if (!selectedFile) {
-      setError("Please select a file.");
-      return;
-    }
-    setUploading(true);
+  const openBulkUpload = () => {
+    setIsBulkMode(true);
+    setSelectedFiles([]);
+    setCustomFileName("");
+    setUploadModalOpen(true);
     setError("");
     setMessage("");
+    setUploadProgress({ processed: 0, total: 0, currentFile: "", percent: 0, message: "" });
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
 
-    const body = new FormData();
-    body.append("file", selectedFile);
-    body.append("location", location);
-    if (customFileName.trim()) body.append("fileName", customFileName.trim());
-    body.append("conflictAction", conflictAction);
+  const handleFilesChange = (files) => {
+    if (files.length > 100) {
+      setError("You can select a maximum of 100 files.");
+      return;
+    }
+    setSelectedFiles(files);
+    setError("");
+  };
 
-    try {
-      await apiRequest(`${MEDIA_API}/upload`, { method: "POST", body });
-      setUploadModalOpen(false);
-      setConflictModalOpen(false);
-      setPendingConflictFile(null);
-      setSelectedFile(null);
-      setMessage("File uploaded successfully.");
-      await loadContents(location);
-    } catch (err) {
-      if (err.status === 409 || err.code === "FILE_ALREADY_EXISTS") {
-        setPendingConflictFile({ file: selectedFile, fileName: customFileName });
-        setConflictMessage(err.message || "A file with this name already exists.");
-        setConflictModalOpen(true);
+  // ======================================
+  // SUBMIT UPLOAD (Single & Bulk)
+  // ======================================
+  const submitUpload = async () => {
+    if (selectedFiles.length === 0) return;
+
+    // 🟢 1. SINGLE UPLOAD LOGIC
+    if (!isBulkMode && selectedFiles.length === 1) {
+      const file = selectedFiles[0];
+      setUploading(true);
+      setError("");
+      setMessage("");
+
+      const body = new FormData();
+      body.append("file", file);
+      body.append("location", location);
+      if (customFileName.trim()) body.append("fileName", customFileName.trim());
+      body.append("conflictAction", "cancel");
+
+      try {
+        await apiRequest(`${MEDIA_API}/upload`, { method: "POST", body });
         setUploadModalOpen(false);
-      } else {
-        // 🔴 YAHAN CHANGE HUA HAI: Error message formatting fix
-        const rawMessage = err.message || "Unable to upload file.";
-        
-        // Ye regex "0.30 MB" jaisi values dhoondh kar unhe "307 KB" mein badal dega
-        const cleanMessage = rawMessage.replace(
-          /(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)\b/gi,
-          (_, num, unit) => {
+        setConflictModalOpen(false);
+        setPendingConflictFile(null);
+        setSelectedFiles([]);
+        setMessage("File uploaded successfully.");
+        await loadContents(location);
+      } catch (err) {
+        if (err.status === 409 || err.code === "FILE_ALREADY_EXISTS") {
+          setPendingConflictFile({ file, fileName: customFileName });
+          setConflictMessage(err.message || "A file with this name already exists.");
+          setConflictModalOpen(true);
+          setUploadModalOpen(false);
+        } else {
+          const rawMessage = err.message || "Unable to upload file.";
+          const cleanMessage = rawMessage.replace(/(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)\b/gi, (_, num, unit) => {
             const multipliers = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 };
             const bytes = parseFloat(num) * multipliers[unit.toUpperCase()];
             return bytesToHuman(bytes);
-          }
-        );
-        
-        setError(cleanMessage);
+          });
+          setError(cleanMessage);
+        }
+      } finally {
+        setUploading(false);
       }
+      return;
+    }
+
+    // 🟢 2. BULK UPLOAD LOGIC (SSE Progress)
+    setUploading(true);
+    setError("");
+    setMessage("");
+    
+    const uploadId = generateUploadId();
+    let closeSSE = null;
+
+    try {
+      // Connect to SSE for progress
+      closeSSE = connectUploadProgress(uploadId, (data) => {
+        setUploadProgress({
+          processed: data.processedFiles || 0,
+          total: data.totalFiles || selectedFiles.length,
+          currentFile: data.currentFile || "",
+          percent: data.currentFileProgress || 0,
+          message: data.message || ""
+        });
+      });
+
+      // For abhi ke liye hum conflictAction "rename" bhej rahe hain bulk mein
+      // taaki popup na aaye aur auto-rename ho jaye
+      const res = await bulkApiRequest(selectedFiles, location, "rename", uploadId);
+      
+      if (closeSSE) closeSSE();
+
+      setUploadModalOpen(false);
+      setSelectedFiles([]);
+      
+      let msg = `Bulk upload complete. ${res.data.success.length} succeeded.`;
+      if (res.data.failed.length > 0) {
+        msg += ` ${res.data.failed.length} failed (size/format).`;
+      }
+      setMessage(msg);
+      
+      await loadContents(location);
+
+    } catch (err) {
+      if (closeSSE) closeSSE();
+      setError(err.message || "Bulk upload failed.");
     } finally {
       setUploading(false);
     }
   };
 
+  // ======================================
+  // RESOLVE SINGLE CONFLICT
+  // ======================================
   const resolveConflict = async (action) => {
     if (!pendingConflictFile) return;
     setConflictModalOpen(false);
@@ -187,20 +263,15 @@ export default function Media() {
     const body = new FormData();
     body.append("file", pendingConflictFile.file);
     body.append("location", location);
-    if (pendingConflictFile.fileName?.trim())
-      body.append("fileName", pendingConflictFile.fileName.trim());
+    if (pendingConflictFile.fileName?.trim()) body.append("fileName", pendingConflictFile.fileName.trim());
     body.append("conflictAction", action);
 
     try {
       await apiRequest(`${MEDIA_API}/upload`, { method: "POST", body });
       setPendingConflictFile(null);
-      setSelectedFile(null);
+      setSelectedFiles([]);
       setUploadModalOpen(false);
-      setMessage(
-        action === "replace"
-          ? "File replaced successfully."
-          : "File uploaded with a new name."
-      );
+      setMessage(action === "replace" ? "File replaced." : "File uploaded with new name.");
       await loadContents(location);
     } catch (err) {
       setError(err.message || "Unable to complete upload.");
@@ -211,7 +282,7 @@ export default function Media() {
   };
 
   // ======================================
-  // FOLDER
+  // FOLDER & DELETE LOGIC
   // ======================================
   const createFolder = async (event) => {
     event.preventDefault();
@@ -222,10 +293,7 @@ export default function Media() {
     try {
       await apiRequest(`${MEDIA_API}/folders`, {
         method: "POST",
-        body: JSON.stringify({
-          folderName: folderName.trim(),
-          parentPath: location,
-        }),
+        body: JSON.stringify({ folderName: folderName.trim(), parentPath: location }),
       });
       setFolderModalOpen(false);
       setFolderName("");
@@ -238,24 +306,14 @@ export default function Media() {
     }
   };
 
-  // ======================================
-  // DELETE FILE
-  // ======================================
   const deleteFile = async (item) => {
     if (!window.confirm(`Delete "${item.name}" permanently?`)) return;
-
     setError("");
     setMessage("");
-
     try {
       const filePath = item.path || item.id?.replace(/^file:/, "");
       if (!filePath) throw new Error("File path is missing.");
-
-      await apiRequest(
-        `${MEDIA_API}/files/${encodeURIComponent(filePath)}`,
-        { method: "DELETE" }
-      );
-
+      await apiRequest(`${MEDIA_API}/files/${encodeURIComponent(filePath)}`, { method: "DELETE" });
       setMessage("File deleted successfully.");
       await loadContents(location);
     } catch (err) {
@@ -263,62 +321,35 @@ export default function Media() {
     }
   };
 
-  // ======================================
-  // DELETE FOLDER
-  // ======================================
   const deleteFolder = async (item) => {
-    if (
-      !window.confirm(
-        `Delete folder "${item.name}"? Only empty folders can be deleted.`
-      )
-    ) {
-      return;
-    }
-
+    if (!window.confirm(`Delete folder "${item.name}"? Only empty folders can be deleted.`)) return;
     setError("");
     setMessage("");
-
     try {
       const folderPath = item.path || joinLocation(location, item.name);
-
       await apiRequest(`${MEDIA_API}/folders`, {
         method: "DELETE",
         body: JSON.stringify({ location: folderPath }),
       });
-
       setMessage("Folder deleted successfully.");
       await loadContents(location);
     } catch (err) {
-      setError(
-        err.message ||
-          "Unable to delete folder. It may not be empty."
-      );
+      setError(err.message || "Unable to delete folder. It may not be empty.");
     }
   };
 
-  // ======================================
-  // TOGGLE FORMAT
-  // ======================================
   const toggleFormat = async (format) => {
     setFormatLoadingId(format.id);
     setError("");
     setMessage("");
-
     try {
       const newStatus = !format.isAllowed;
-
       await apiRequest(`${MEDIA_API}/formats/${format.id}/status`, {
         method: "PATCH",
         body: JSON.stringify({ isAllowed: newStatus }),
       });
-
       await loadFormats();
-
-      setMessage(
-        `${format.extension.toUpperCase()} ${
-          newStatus ? "enabled" : "disabled"
-        } successfully.`
-      );
+      setMessage(`${format.extension.toUpperCase()} ${newStatus ? "enabled" : "disabled"} successfully.`);
     } catch (err) {
       setError(err.message || "Unable to update format.");
     } finally {
@@ -326,32 +357,16 @@ export default function Media() {
     }
   };
 
-  // ======================================
-  // OPEN FORMAT MODAL
-  // ======================================
-  const openFormats = async () => {
-    setFormatModalOpen(true);
-    await loadFormats();
-  };
-
-  // ======================================
-  // OPEN ITEM
-  // ======================================
   const openItem = (item) => {
     if (item.type === "folder") {
       setSearch("");
       setLocation(item.path || joinLocation(location, item.name));
     } else if (item.url) {
-      const url = item.url.startsWith("http")
-        ? item.url
-        : `${API_BASE_URL}${item.url}`;
+      const url = item.url.startsWith("http") ? item.url : `${API_BASE_URL}${item.url}`;
       window.open(url, "_blank", "noopener,noreferrer");
     }
   };
 
-  // ======================================
-  // COUNTS
-  // ======================================
   const totalFiles = items.filter((item) => item.type === "file").length;
   const totalFolders = items.filter((item) => item.type === "folder").length;
   const allowedFormats = formats.filter((f) => f.isAllowed).length;
@@ -361,11 +376,13 @@ export default function Media() {
   // ======================================
   return (
     <div className="mx-auto max-w-7xl space-y-6 p-4 sm:p-6">
-      {/* HEADER */}
+      
+      {/* 🟢 HEADER WITH TWO BUTTONS */}
       <MediaHeader
-        onOpenFormats={openFormats}
         onOpenFolderModal={() => setFolderModalOpen(true)}
-        onOpenUploadModal={openUploadModal}
+        onOpenSingleUpload={openSingleUpload}
+        onOpenBulkUpload={openBulkUpload}
+        // onOpenFormats prop nahi chahiye kyunki MediaHeader mein navigate use kiya hai
       />
 
       {/* ERROR */}
@@ -373,10 +390,7 @@ export default function Media() {
         <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
           <AlertCircle size={17} className="mt-0.5 shrink-0" />
           <span>{error}</span>
-          <button
-            onClick={() => setError("")}
-            className="ml-auto text-rose-500 hover:text-rose-700"
-          >
+          <button onClick={() => setError("")} className="ml-auto text-rose-500 hover:text-rose-700">
             <X size={16} />
           </button>
         </div>
@@ -387,10 +401,7 @@ export default function Media() {
         <div className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
           <CheckCircle2 size={17} className="mt-0.5 shrink-0" />
           <span>{message}</span>
-          <button
-            onClick={() => setMessage("")}
-            className="ml-auto text-emerald-500 hover:text-emerald-700"
-          >
+          <button onClick={() => setMessage("")} className="ml-auto text-emerald-500 hover:text-emerald-700">
             <X size={16} />
           </button>
         </div>
@@ -406,7 +417,6 @@ export default function Media() {
 
       {/* MEDIA EXPLORER */}
       <section className="overflow-hidden rounded-xl border border-slate-200 bg-white">
-        {/* TOOLBAR */}
         <MediaToolbar
           location={location}
           breadcrumbs={breadcrumbs}
@@ -434,50 +444,30 @@ export default function Media() {
               {search ? "No matching items" : "This folder is empty"}
             </h3>
             <p className="mt-1 max-w-sm text-sm text-slate-500">
-              {search
-                ? "Try another search term."
-                : "Upload a file or create a folder to start organizing your media."}
+              {search ? "Try another search term." : "Upload a file or create a folder to start organizing your media."}
             </p>
             {!search && (
               <div className="mt-4 flex gap-2">
-                <button
-                  onClick={() => setFolderModalOpen(true)}
-                  className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
-                >
+                <button onClick={() => setFolderModalOpen(true)} className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
                   Create folder
                 </button>
-                <button
-                  onClick={openUploadModal}
-                  className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
-                >
+                <button onClick={openSingleUpload} className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700">
                   Upload file
                 </button>
               </div>
             )}
           </div>
         ) : view === "grid" ? (
-          <MediaGrid
-            items={filteredItems}
-            onOpen={openItem}
-            onDelete={deleteFile}
-            onDeleteFolder={deleteFolder}
-          />
+          <MediaGrid items={filteredItems} onOpen={openItem} onDelete={deleteFile} onDeleteFolder={deleteFolder} />
         ) : (
-          <MediaList
-            items={filteredItems}
-            onOpen={openItem}
-            onDelete={deleteFile}
-            onDeleteFolder={deleteFolder}
-          />
+          <MediaList items={filteredItems} onOpen={openItem} onDelete={deleteFile} onDeleteFolder={deleteFolder} />
         )}
       </section>
 
       {/* FOOTER */}
       <div className="flex flex-col gap-1 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between">
         <span>Files are served from the public media directory.</span>
-        <span>
-          {filteredItems.length} item{filteredItems.length === 1 ? "" : "s"} shown
-        </span>
+        <span>{filteredItems.length} item{filteredItems.length === 1 ? "" : "s"} shown</span>
       </div>
 
       {/* MODALS */}
@@ -493,15 +483,16 @@ export default function Media() {
 
       <UploadModal
         open={uploadModalOpen}
-        onClose={() => setUploadModalOpen(false)}
+        onClose={() => !uploading && setUploadModalOpen(false)}
         uploading={uploading}
         location={location}
-        selectedFile={selectedFile}
-        onFileChange={setSelectedFile}
+        selectedFiles={selectedFiles}
+        onFilesChange={handleFilesChange}
         customFileName={customFileName}
         onCustomFileNameChange={setCustomFileName}
-        fileInputRef={fileInputRef}
         onSubmit={submitUpload}
+        uploadProgress={uploadProgress}
+        isBulkMode={isBulkMode}
       />
 
       <ConflictModal
