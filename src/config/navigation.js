@@ -4,6 +4,7 @@ import {
   Menu,
   Languages,
   Settings,
+  FileImage,
 } from "lucide-react";
 
 export const adminNavigation = [
@@ -28,6 +29,11 @@ export const adminNavigation = [
     path: "/admin/languages",
     icon: Languages,
   },
+  {
+    label: "Media",
+    path: "/admin/media",
+    icon: FileImage,
+  }
 ];
 
 export const adminBottomNavigation = [

@@ -6,6 +6,8 @@ import {  Menu } from 'lucide-react'
 import Languages from '../pages/Languages'
 import Menus from '../pages/Menus'
 import Pages from '../pages/Pages'
+import Media from '../pages/media/Media'
+import MediaFormats from '../pages/media/MediaFormats'
 
 const AdminRoutes = () => {
   return (
@@ -15,6 +17,8 @@ const AdminRoutes = () => {
     <Route path='languages' element={<Languages/>} />
     <Route path='menus' element={<Menus/>} />
     <Route path='pages' element={<Pages/>} />
+    <Route path='media' element={<Media/>} />
+    <Route path='media/formats' element={<MediaFormats />} />
      </Route>
     </Routes>
   )

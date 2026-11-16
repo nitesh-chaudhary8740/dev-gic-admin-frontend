@@ -1,4 +1,3 @@
-
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Languages as LanguagesIcon,
@@ -12,6 +11,7 @@ import {
   CheckCircle2,
   CircleDashed,
   AlertCircle,
+  Star,
 } from "lucide-react";
 
 const API_BASE_URL =
@@ -20,7 +20,9 @@ const API_BASE_URL =
 const EMPTY_FORM = {
   name: "",
   code: "",
+  displayName: "",
   isPublished: true,
+  isDefault: false,
 };
 
 async function apiRequest(endpoint, options = {}) {
@@ -72,6 +74,7 @@ function Languages() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [togglingId, setTogglingId] = useState(null);
+  const [settingDefaultId, setSettingDefaultId] = useState(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
@@ -101,13 +104,16 @@ function Languages() {
     return languages.filter(
       (language) =>
         String(language.name || "").toLowerCase().includes(query) ||
-        String(language.code || "").toLowerCase().includes(query)
+        String(language.code || "").toLowerCase().includes(query) ||
+        String(language.displayName || "").toLowerCase().includes(query)
     );
   }, [languages, search]);
 
   const publishedCount = languages.filter(
     (language) => language.isPublished
   ).length;
+
+  const defaultLanguage = languages.find((l) => l.isDefault);
 
   const resetForm = () => {
     setForm(EMPTY_FORM);
@@ -122,7 +128,9 @@ function Languages() {
     setForm({
       name: language.name || "",
       code: language.code || "",
+      displayName: language.displayName || "",
       isPublished: Boolean(language.isPublished),
+      isDefault: Boolean(language.isDefault),
     });
     setShowForm(true);
     setError("");
@@ -134,15 +142,18 @@ function Languages() {
     setError("");
     setMessage("");
 
-    if (!form.name.trim() || !form.code.trim()) {
-      setError("Language name aur code dono required hain.");
+    if (!form.name.trim() || !form.code.trim() || !form.displayName.trim()) {
+      setError("Language name, code, aur display name teeno required hain.");
       return;
     }
 
     const payload = {
       name: form.name.trim(),
       code: form.code.trim(),
+      displayName: form.displayName.trim(),
       isPublished: form.isPublished,
+      // isDefault update ke waqt nahi bhejenge, alag endpoint hai
+      ...(editingId === null ? { isDefault: form.isDefault } : {}),
     };
 
     setSaving(true);
@@ -203,6 +214,37 @@ function Languages() {
       setError(err.message || "Language status update nahi hua.");
     } finally {
       setTogglingId(null);
+    }
+  };
+
+  const handleSetDefault = async (language) => {
+    const id = getLanguageId(language);
+
+    if (id == null) {
+      setError("Language ID nahi mila.");
+      return;
+    }
+
+    if (language.isDefault) {
+      setMessage("Yeh language already default hai.");
+      return;
+    }
+
+    setError("");
+    setMessage("");
+    setSettingDefaultId(id);
+
+    try {
+      await apiRequest(`/api/languages/${id}/set-default`, {
+        method: "PATCH",
+      });
+
+      setMessage(`"${language.name}" ab default language hai.`);
+      await loadLanguages();
+    } catch (err) {
+      setError(err.message || "Default language set nahi ho payi.");
+    } finally {
+      setSettingDefaultId(null);
     }
   };
 
@@ -318,14 +360,14 @@ function Languages() {
 
         <div className="rounded-xl border border-slate-200 bg-white p-5">
           <div className="flex items-center justify-between">
-            <p className="text-sm font-medium text-slate-500">Draft</p>
-            <CircleDashed size={19} className="text-amber-600" />
+            <p className="text-sm font-medium text-slate-500">Default</p>
+            <Star size={19} className="text-amber-500" />
           </div>
           <p className="mt-3 text-2xl font-semibold text-slate-900">
-            {languages.length - publishedCount}
+            {defaultLanguage ? defaultLanguage.displayName || defaultLanguage.name : "—"}
           </p>
           <p className="mt-1 text-xs text-slate-400">
-            Currently unpublished
+            {defaultLanguage ? `Code: ${defaultLanguage.code}` : "No default set"}
           </p>
         </div>
       </div>
@@ -339,7 +381,7 @@ function Languages() {
                 {editingId !== null ? "Edit language" : "Add new language"}
               </h2>
               <p className="mt-1 text-xs text-slate-500">
-                Enter the language name and its code.
+                Enter the language name, code, and display name.
               </p>
             </div>
 
@@ -374,6 +416,9 @@ function Languages() {
                   required
                   maxLength={100}
                 />
+                <p className="mt-1.5 text-xs text-slate-400">
+                  English name (used internally).
+                </p>
               </div>
 
               <div>
@@ -393,35 +438,85 @@ function Languages() {
                   placeholder="e.g. en"
                   className={inputClass}
                   required
-                  maxLength={20}
+                  maxLength={6}
                 />
                 <p className="mt-1.5 text-xs text-slate-400">
-                  Use the code format expected by your backend.
+                  2-6 lowercase letters (e.g. en, hi).
+                </p>
+              </div>
+
+              <div className="md:col-span-2">
+                <label
+                  htmlFor="language-display-name"
+                  className="mb-1.5 block text-sm font-medium text-slate-700"
+                >
+                  Display name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  id="language-display-name"
+                  type="text"
+                  value={form.displayName}
+                  onChange={(event) =>
+                    setForm({ ...form, displayName: event.target.value })
+                  }
+                  placeholder="e.g. हिन्दी, English"
+                  className={inputClass}
+                  required
+                  maxLength={100}
+                />
+                <p className="mt-1.5 text-xs text-slate-400">
+                  Native name shown in the language selector.
                 </p>
               </div>
             </div>
 
-            <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3.5">
-              <input
-                type="checkbox"
-                checked={form.isPublished}
-                onChange={(event) =>
-                  setForm({
-                    ...form,
-                    isPublished: event.target.checked,
-                  })
-                }
-                className="mt-0.5 h-4 w-4 rounded border-slate-300 accent-blue-600"
-              />
-              <span>
-                <span className="block text-sm font-medium text-slate-700">
-                  Publish language
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3.5">
+                <input
+                  type="checkbox"
+                  checked={form.isPublished}
+                  onChange={(event) =>
+                    setForm({
+                      ...form,
+                      isPublished: event.target.checked,
+                    })
+                  }
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 accent-blue-600"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-slate-700">
+                    Publish language
+                  </span>
+                  <span className="mt-1 block text-xs text-slate-500">
+                    Enable this language for the website.
+                  </span>
                 </span>
-                <span className="mt-1 block text-xs text-slate-500">
-                  Enable this language for the website.
-                </span>
-              </span>
-            </label>
+              </label>
+
+              {editingId === null && (
+                <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 p-3.5">
+                  <input
+                    type="checkbox"
+                    checked={form.isDefault}
+                    onChange={(event) =>
+                      setForm({
+                        ...form,
+                        isDefault: event.target.checked,
+                      })
+                    }
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 accent-amber-500"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-slate-700">
+                      Set as default
+                    </span>
+                    <span className="mt-1 block text-xs text-slate-500">
+                      Default language used for new menus.
+                    </span>
+                  </span>
+                </label>
+              )}
+            </div>
 
             <div className="flex flex-wrap justify-end gap-2 border-t border-slate-100 pt-4">
               <button
@@ -501,7 +596,7 @@ function Languages() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[600px] text-left">
+            <table className="w-full min-w-[700px] text-left">
               <thead className="bg-slate-50">
                 <tr>
                   <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
@@ -513,6 +608,9 @@ function Languages() {
                   <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
                     Status
                   </th>
+                  <th className="px-5 py-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Default
+                  </th>
                   <th className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
                     Actions
                   </th>
@@ -523,7 +621,9 @@ function Languages() {
                 {filteredLanguages.map((language, index) => {
                   const id = getLanguageId(language);
                   const isPublished = Boolean(language.isPublished);
+                  const isDefault = Boolean(language.isDefault);
                   const isToggling = togglingId === id;
+                  const isSettingDefault = settingDefaultId === id;
 
                   return (
                     <tr
@@ -533,17 +633,15 @@ function Languages() {
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-3">
                           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-sm font-semibold uppercase text-slate-600">
-                            {(language.name || "?").slice(0, 2)}
+                            {(language.displayName || language.name || "?").slice(0, 2)}
                           </div>
                           <div>
                             <p className="text-sm font-medium text-slate-800">
-                              {language.name || "Unnamed language"}
+                              {language.displayName || language.name || "Unnamed language"}
                             </p>
-                            {id != null && (
-                              <p className="mt-0.5 text-xs text-slate-400">
-                                ID: {id}
-                              </p>
-                            )}
+                            <p className="mt-0.5 text-xs text-slate-400">
+                              {language.name} {id != null && `· ID: ${id}`}
+                            </p>
                           </div>
                         </div>
                       </td>
@@ -574,6 +672,30 @@ function Languages() {
                       </td>
 
                       <td className="px-5 py-4">
+                        {isDefault ? (
+                          <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
+                            <Star size={12} className="fill-amber-500 text-amber-500" />
+                            Default
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleSetDefault(language)}
+                            disabled={isSettingDefault || !isPublished}
+                            className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 transition hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
+                            title={!isPublished ? "Publish first to set as default" : "Set as default"}
+                          >
+                            {isSettingDefault ? (
+                              <RefreshCw size={12} className="animate-spin" />
+                            ) : (
+                              <Star size={12} />
+                            )}
+                            Set default
+                          </button>
+                        )}
+                      </td>
+
+                      <td className="px-5 py-4">
                         <div className="flex items-center justify-end gap-1">
                           <button
                             type="button"
@@ -588,7 +710,7 @@ function Languages() {
                           <button
                             type="button"
                             title={isPublished ? "Unpublish" : "Publish"}
-                            disabled={isToggling || id == null}
+                            disabled={isToggling || id == null || (isPublished && isDefault)}
                             onClick={() => handleTogglePublish(language)}
                             className="rounded-lg p-2 text-slate-500 transition hover:bg-emerald-50 hover:text-emerald-700 disabled:opacity-40"
                           >

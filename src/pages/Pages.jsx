@@ -1,4 +1,3 @@
-
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
@@ -13,6 +12,8 @@ import {
   Save,
   Search,
   Trash2,
+  Star,
+  Globe2,
 } from "lucide-react";
 
 const API_BASE_URL =
@@ -92,7 +93,6 @@ function getPageTranslationId(page) {
 }
 
 function getMenuPath(menu, menus) {
-  // Returns [top-level menu, submenu, submenu, submenu]
   const path = [];
   let current = menu;
   const visited = new Set();
@@ -150,13 +150,15 @@ export default function Pages() {
       setLanguages(nextLanguages);
       setPages(nextPages);
 
+      // Default language prefer karo (isDefault = true)
       setLanguageId((current) => {
         if (current && nextLanguages.some((l) => sameId(getId(l), current))) {
           return current;
         }
-
         const defaultLanguage =
-          nextLanguages.find((l) => l.isPublished) ?? nextLanguages[0];
+          nextLanguages.find((l) => l.isDefault) ||
+          nextLanguages.find((l) => l.isPublished) ||
+          nextLanguages[0];
 
         return defaultLanguage ? String(getId(defaultLanguage)) : "";
       });
@@ -172,8 +174,6 @@ export default function Pages() {
   }, [loadData]);
 
   const selectedMenuIds = menuPath.filter(Boolean);
-
-  // Current menu = deepest selected menu.
   const selectedMenuId = selectedMenuIds.at(-1) || "";
 
   const selectedMenu = useMemo(
@@ -199,8 +199,6 @@ export default function Pages() {
     [pages, selectedTranslationId]
   );
 
-  // Dropdown options: each level only shows direct children
-  // of the previously selected menu.
   const menuOptions = useMemo(() => {
     return [0, 1, 2, 3].map((level) => {
       const parentId = level === 0 ? null : menuPath[level - 1];
@@ -217,7 +215,6 @@ export default function Pages() {
     });
   }, [menus, menuPath]);
 
-  // Load content when the selected menu or language changes.
   useEffect(() => {
     if (!selectedTranslationId) {
       setForm(EMPTY_FORM);
@@ -245,7 +242,6 @@ export default function Pages() {
       const next = [...current];
       next[level] = value;
 
-      // Clear every child selection when a parent changes.
       for (let i = level + 1; i < next.length; i += 1) {
         next[i] = "";
       }
@@ -343,12 +339,12 @@ export default function Pages() {
     setLanguageId(String(
       matchedTranslation.languageId ?? matchedTranslation.language?.id
     ));
-    setMenuPath([
-      ...getMenuPath(matchedMenu, menus),
-      "",
-      "",
-      "",
-    ].slice(0, 4));
+
+    // Menu path restore karo (sirf selected IDs, extra empty nahi)
+    const path = getMenuPath(matchedMenu, menus);
+    const paddedPath = [...path, "", "", "", ""].slice(0, 4);
+    setMenuPath(paddedPath);
+
     setEditingPageId(getId(page));
     setForm({
       content: page.content ?? "",
@@ -411,6 +407,7 @@ export default function Pages() {
         linked.translation.menuTitle,
         linked.translation.menuURL,
         language?.name,
+        language?.displayName,
         language?.code,
       ].join(" ").toLowerCase();
 
@@ -418,6 +415,7 @@ export default function Pages() {
     });
   }, [pages, translationLookup, languages, search]);
 
+  // Preview document - iframe ke andar full HTML document
   const previewDocument = `<!doctype html>
 <html>
 <head>
@@ -438,6 +436,8 @@ export default function Pages() {
     "Submenu — Level 2",
     "Submenu — Level 3",
   ];
+
+  const defaultLanguage = languages.find((l) => l.isDefault);
 
   return (
     <div className="space-y-6">
@@ -485,7 +485,15 @@ export default function Pages() {
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
           <div className="sm:col-span-2 xl:col-span-1">
-            <label className="admin-label">Language *</label>
+            <label className="admin-label flex items-center gap-2">
+              Language *
+              {defaultLanguage && (
+                <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                  <Star size={9} className="fill-amber-500 text-amber-500" />
+                  Default
+                </span>
+              )}
+            </label>
             <select
               value={languageId}
               onChange={(event) => handleLanguageChange(event.target.value)}
@@ -495,7 +503,8 @@ export default function Pages() {
               <option value="">Select language</option>
               {languages.map((language) => (
                 <option key={getId(language)} value={getId(language)}>
-                  {language.name} ({language.code})
+                  {language.displayName || language.name} ({language.code})
+                  {language.isDefault ? " ★" : ""}
                 </option>
               ))}
             </select>
@@ -519,9 +528,11 @@ export default function Pages() {
                 </option>
                 {menuOptions[level].map((menu) => {
                   const translation = getTranslation(menu, languageId);
+                  const isDefaultMenu = Boolean(menu.isDefault);
 
                   return (
                     <option key={getId(menu)} value={getId(menu)}>
+                      {isDefaultMenu ? "★ " : ""}
                       {getTranslationTitle(menu, languageId)}
                       {!translation ? " — translation missing" : ""}
                     </option>
@@ -538,13 +549,19 @@ export default function Pages() {
               <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">
                 Selected menu
               </p>
-              <p className="mt-1 font-semibold text-slate-900">
+              <p className="mt-1 font-semibold text-slate-900 flex items-center gap-2 flex-wrap">
                 {selectedMenuIds.map((id) => {
                   const menu = menus.find((item) => sameId(getId(item), id));
                   return getTranslationTitle(menu, languageId);
                 }).join("  /  ")}
+                {selectedMenu.isDefault && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
+                    <Star size={10} className="fill-amber-500 text-amber-500" />
+                    Home
+                  </span>
+                )}
               </p>
-              <p className="mt-1 text-xs text-slate-600">
+              <p className="mt-1 text-xs text-slate-600 font-mono">
                 {selectedTranslation
                   ? `URL: ${selectedTranslation.menuURL || "Not set"}`
                   : "Is menu ke liye selected language ki translation nahi hai."}
@@ -614,7 +631,7 @@ export default function Pages() {
               className="admin-input min-h-80 resize-y font-mono text-sm"
             />
             <p className="mt-2 text-xs text-slate-500">
-              HTML source yahan edit karein. Preview ko trusted content ke saath hi use karein.
+              HTML source yahan edit karein. Full HTML document (with &lt;style&gt;, &lt;script&gt;) bhi paste kar sakte hain — preview iframe mein render hoga.
             </p>
           </div>
 
@@ -666,7 +683,7 @@ export default function Pages() {
             <div>
               <h2 className="text-lg font-semibold">HTML Live Preview</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Current editor content ka preview
+                Current editor content ka preview (sandboxed)
               </p>
             </div>
 
@@ -686,12 +703,15 @@ export default function Pages() {
             <iframe
               title="HTML content preview"
               srcDoc={previewDocument}
-              sandbox=""
+              // sandbox="allow-scripts" -> animation/script chalega, parent safe rahega
+              // sandbox="" -> script block, sirf static preview
+              sandbox="allow-scripts"
               className="h-[520px] w-full bg-white"
             />
           </div>
-          <p className="text-xs text-slate-500">
-            Preview sandboxed hai; scripts aur forms iframe mein execute nahi honge.
+          <p className="text-xs text-slate-500 flex items-start gap-1.5">
+            <Globe2 size={12} className="mt-0.5 shrink-0" />
+            Preview sandboxed hai (<code className="bg-slate-100 px-1 rounded">allow-scripts</code> without <code className="bg-slate-100 px-1 rounded">allow-same-origin</code>) — scripts chalenge lekin parent panel safe rahega.
           </p>
         </section>
       </section>
@@ -754,8 +774,14 @@ export default function Pages() {
                   return (
                     <tr key={getId(page)}>
                       <td>
-                        <div className="font-medium text-slate-900">
+                        <div className="font-medium text-slate-900 flex items-center gap-2">
                           {linked?.translation.menuTitle || `Page #${getId(page)}`}
+                          {linked?.menu?.isDefault && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                              <Star size={9} className="fill-amber-500 text-amber-500" />
+                              Home
+                            </span>
+                          )}
                         </div>
                         <div className="mt-1 text-xs text-slate-500">
                           {linked ? `Menu ID: ${getId(linked.menu)}` : `Translation ID: ${getPageTranslationId(page)}`}
@@ -763,7 +789,7 @@ export default function Pages() {
                       </td>
                       <td>
                         {language
-                          ? `${language.name} (${language.code})`
+                          ? `${language.displayName || language.name} (${language.code})`
                           : "Unknown"}
                       </td>
                       <td className="max-w-52 truncate font-mono text-xs">
