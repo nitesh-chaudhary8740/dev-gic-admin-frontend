@@ -1,4 +1,3 @@
-
 import React, {
   useCallback,
   useEffect,
@@ -29,18 +28,31 @@ import ConflictModal from "./components/ConflictModal";
 import FormatsModal from "./components/FormatsModal";
 import BulkUploadReportModal from "./components/BulkUploadReportModal";
 
+// ======================================
+// API — mediaApi.js
+// ======================================
 import {
-  API_BASE_URL,
-  MEDIA_API,
-  apiRequest,
+  getMediaContents,
+  getMediaFormats,
+  updateMediaFormatStatus,
+  uploadSingleFile,
+  bulkUploadMedia,
+  cancelBulkUpload,
+  connectUploadProgress,
+  generateUploadId,
+  createMediaFolder,
+  deleteMediaFolder,
+  deleteMediaFiles,
+} from "../../api/mediaApi";
+
+// ======================================
+// UTILITIES — mediaHelpers.js
+// ======================================
+import {
   getContents,
   getFormats,
   joinLocation,
   bytesToHuman,
-  bulkApiRequest,
-  cancelBulkUpload,
-  connectUploadProgress,
-  generateUploadId,
 } from "./utils/mediaHelpers";
 
 export default function Media() {
@@ -103,6 +115,13 @@ export default function Media() {
   const [formatLoadingId, setFormatLoadingId] = useState(null);
 
   // ======================================
+  // ERROR EXTRACTOR
+  // ======================================
+
+  const extractErrorMessage = (err, fallback = "Something went wrong.") =>
+    err?.response?.data?.message || err?.message || fallback;
+
+  // ======================================
   // LOAD DATA
   // ======================================
 
@@ -111,18 +130,15 @@ export default function Media() {
     setError("");
 
     try {
-      const query = new URLSearchParams({
-        location: targetLocation,
-      });
-
-      const response = await apiRequest(
-        `${MEDIA_API}/contents?${query.toString()}`
-      );
-
+      const response = await getMediaContents(targetLocation);
       setItems(getContents(response));
     } catch (err) {
       setItems([]);
-      setError(err.message || "Unable to load media contents.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Unable to load media contents."
+      );
     } finally {
       setLoading(false);
     }
@@ -130,10 +146,14 @@ export default function Media() {
 
   const loadFormats = useCallback(async () => {
     try {
-      const response = await apiRequest(`${MEDIA_API}/formats`);
+      const response = await getMediaFormats();
       setFormats(getFormats(response));
     } catch (err) {
-      setError(err.message || "Unable to load media formats.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Unable to load media formats."
+      );
     }
   }, []);
 
@@ -178,9 +198,7 @@ export default function Media() {
   }, [items, search]);
 
   const breadcrumbs = useMemo(() => {
-    const parts = location
-      ? location.split("/").filter(Boolean)
-      : [];
+    const parts = location ? location.split("/").filter(Boolean) : [];
 
     return [
       {
@@ -249,21 +267,12 @@ export default function Media() {
     setError("");
     setMessage("");
 
-    const body = new FormData();
-
-    body.append("file", file);
-    body.append("location", location);
-
-    if (customFileName.trim()) {
-      body.append("fileName", customFileName.trim());
-    }
-
-    body.append("conflictAction", conflictAction);
-
     try {
-      await apiRequest(`${MEDIA_API}/upload`, {
-        method: "POST",
-        body,
+      await uploadSingleFile({
+        file,
+        location,
+        fileName: customFileName,
+        conflictAction,
       });
 
       setUploadModalOpen(false);
@@ -275,26 +284,27 @@ export default function Media() {
 
       await loadContents(location);
     } catch (err) {
-      if (
-        err.status === 409 ||
-        err.code === "FILE_ALREADY_EXISTS"
-      ) {
+      const status = err?.response?.status;
+      const code = err?.response?.data?.code;
+      const apiMessage =
+        err?.response?.data?.message ||
+        err?.message ||
+        "Unable to upload file.";
+
+      if (status === 409 || code === "FILE_ALREADY_EXISTS") {
         setPendingConflictFile({
           file,
           fileName: customFileName,
         });
 
         setConflictMessage(
-          err.message || "A file with this name already exists."
+          apiMessage || "A file with this name already exists."
         );
 
         setConflictModalOpen(true);
         setUploadModalOpen(false);
       } else {
-        const rawMessage =
-          err.message || "Unable to upload file.";
-
-        const cleanMessage = rawMessage.replace(
+        const cleanMessage = apiMessage.replace(
           /(\d+(?:\.\d+)?)\s*(B|KB|MB|GB)\b/gi,
           (_, num, unit) => {
             const multipliers = {
@@ -342,7 +352,6 @@ export default function Media() {
     });
 
     const uploadId = generateUploadId();
-
     setActiveUploadId(uploadId);
 
     const abortController = new AbortController();
@@ -393,13 +402,13 @@ export default function Media() {
       );
 
       // Send all files in one HTTP request.
-      const response = await bulkApiRequest(
+      const response = await bulkUploadMedia({
         files,
         location,
-        "rename",
+        conflictAction: "rename",
         uploadId,
-        abortController.signal
-      );
+        signal: abortController.signal,
+      });
 
       const result = response.data || {};
 
@@ -471,16 +480,26 @@ export default function Media() {
 
       await loadContents(location);
     } catch (err) {
-      if (err.name === "AbortError") {
+      const aborted =
+        err?.name === "AbortError" ||
+        err?.name === "CanceledError" ||
+        err?.code === "ERR_CANCELED";
+
+      if (aborted) {
         setMessage("Upload cancelled.");
       } else {
-        setError(err.message || "Bulk upload failed.");
+        const msg =
+          err?.response?.data?.message ||
+          err?.message ||
+          "Bulk upload failed.";
+
+        setError(msg);
 
         setUploadReport(
           files.map((file) => ({
             name: file.name,
             status: "failed",
-            reason: err.message || "Upload request failed.",
+            reason: msg,
           }))
         );
 
@@ -544,24 +563,12 @@ export default function Media() {
     setError("");
     setMessage("");
 
-    const body = new FormData();
-
-    body.append("file", pendingConflictFile.file);
-    body.append("location", location);
-
-    if (pendingConflictFile.fileName?.trim()) {
-      body.append(
-        "fileName",
-        pendingConflictFile.fileName.trim()
-      );
-    }
-
-    body.append("conflictAction", action);
-
     try {
-      await apiRequest(`${MEDIA_API}/upload`, {
-        method: "POST",
-        body,
+      await uploadSingleFile({
+        file: pendingConflictFile.file,
+        location,
+        fileName: pendingConflictFile.fileName,
+        conflictAction: action,
       });
 
       setPendingConflictFile(null);
@@ -576,9 +583,13 @@ export default function Media() {
 
       await loadContents(location);
     } catch (err) {
-      setError(err.message || "Unable to complete upload.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Unable to complete upload."
+      );
 
-      if (err.status === 409) {
+      if (err?.response?.status === 409) {
         setConflictModalOpen(true);
       }
     } finally {
@@ -600,12 +611,9 @@ export default function Media() {
     setMessage("");
 
     try {
-      await apiRequest(`${MEDIA_API}/folders`, {
-        method: "POST",
-        body: JSON.stringify({
-          folderName: folderName.trim(),
-          parentPath: location,
-        }),
+      await createMediaFolder({
+        folderName: folderName.trim(),
+        parentPath: location,
       });
 
       setFolderModalOpen(false);
@@ -614,7 +622,11 @@ export default function Media() {
 
       await loadContents(location);
     } catch (err) {
-      setError(err.message || "Unable to create folder.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Unable to create folder."
+      );
     } finally {
       setSavingFolder(false);
     }
@@ -650,9 +662,7 @@ export default function Media() {
         );
       }
 
-      return [
-        ...new Set([...previous, ...visibleFileNames]),
-      ];
+      return [...new Set([...previous, ...visibleFileNames])];
     });
   };
 
@@ -689,22 +699,29 @@ export default function Media() {
     }
   };
 
+  const resolveFileUrl = (item) => {
+    if (!item?.url) return null;
+
+    if (item.url.startsWith("http")) return item.url;
+
+    // Relative URL — encode only after the first two segments.
+    const encodedPath = item.url
+      .split("/")
+      .map((segment, index) =>
+        index < 2 ? segment : encodeURIComponent(segment)
+      )
+      .join("/");
+
+    return encodedPath;
+  };
+
   const copyFileLink = async (item) => {
     try {
-      if (!item?.url) {
+      const url = resolveFileUrl(item);
+
+      if (!url) {
         throw new Error("File URL is not available.");
       }
-
-      const encodedPath = item.url
-        .split("/")
-        .map((segment, index) =>
-          index < 2 ? segment : encodeURIComponent(segment)
-        )
-        .join("/");
-
-      const url = item.url.startsWith("http")
-        ? item.url
-        : `${API_BASE_URL.replace(/\/$/, "")}${encodedPath}`;
 
       await copyTextToClipboard(url);
 
@@ -742,12 +759,9 @@ export default function Media() {
     setMessage("");
 
     try {
-      const response = await apiRequest(`${MEDIA_API}/files`, {
-        method: "DELETE",
-        body: JSON.stringify({
-          location,
-          fileNames: filesToDelete,
-        }),
+      const response = await deleteMediaFiles({
+        location,
+        fileNames: filesToDelete,
       });
 
       const result = response.data || {};
@@ -768,8 +782,7 @@ export default function Media() {
         setError(
           (result.failed || [])
             .map(
-              (file) =>
-                `${file.fileName}: ${file.reason}`
+              (file) => `${file.fileName}: ${file.reason}`
             )
             .join(" | ")
         );
@@ -782,7 +795,9 @@ export default function Media() {
       await loadContents(location);
     } catch (err) {
       setError(
-        err.message || "Unable to delete selected files."
+        err?.response?.data?.message ||
+          err?.message ||
+          "Unable to delete selected files."
       );
     } finally {
       setDeletingFiles(false);
@@ -807,12 +822,9 @@ export default function Media() {
     setMessage("");
 
     try {
-      const response = await apiRequest(`${MEDIA_API}/files`, {
-        method: "DELETE",
-        body: JSON.stringify({
-          location,
-          fileNames: [item.name],
-        }),
+      const response = await deleteMediaFiles({
+        location,
+        fileNames: [item.name],
       });
 
       const result = response.data || {};
@@ -833,7 +845,11 @@ export default function Media() {
 
       await loadContents(location);
     } catch (err) {
-      setError(err.message || "Unable to delete file.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Unable to delete file."
+      );
     } finally {
       setDeletingFiles(false);
     }
@@ -857,19 +873,15 @@ export default function Media() {
       const folderPath =
         item.path || joinLocation(location, item.name);
 
-      await apiRequest(`${MEDIA_API}/folders`, {
-        method: "DELETE",
-        body: JSON.stringify({
-          location: folderPath,
-        }),
-      });
+      await deleteMediaFolder(folderPath);
 
       setMessage("Folder deleted successfully.");
 
       await loadContents(location);
     } catch (err) {
       setError(
-        err.message ||
+        err?.response?.data?.message ||
+          err?.message ||
           "Unable to delete folder. It may not be empty."
       );
     }
@@ -887,15 +899,7 @@ export default function Media() {
     try {
       const newStatus = !format.isAllowed;
 
-      await apiRequest(
-        `${MEDIA_API}/formats/${format.id}/status`,
-        {
-          method: "PATCH",
-          body: JSON.stringify({
-            isAllowed: newStatus,
-          }),
-        }
-      );
+      await updateMediaFormatStatus(format.id, newStatus);
 
       await loadFormats();
 
@@ -905,7 +909,11 @@ export default function Media() {
         } successfully.`
       );
     } catch (err) {
-      setError(err.message || "Unable to update format.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Unable to update format."
+      );
     } finally {
       setFormatLoadingId(null);
     }
@@ -921,18 +929,11 @@ export default function Media() {
         item.path || joinLocation(location, item.name)
       );
     } else if (item.url) {
-      const encodedPath = item.url
-        .split("/")
-        .map((segment, index) =>
-          index < 2 ? segment : encodeURIComponent(segment)
-        )
-        .join("/");
+      const url = resolveFileUrl(item);
 
-      const url = item.url.startsWith("http")
-        ? item.url
-        : `${API_BASE_URL.replace(/\/$/, "")}${encodedPath}`;
-
-      window.open(url, "_blank", "noopener,noreferrer");
+      if (url) {
+        window.open(url, "_blank", "noopener,noreferrer");
+      }
     }
   };
 
@@ -967,10 +968,7 @@ export default function Media() {
       {/* ERROR */}
       {error && (
         <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
-          <AlertCircle
-            size={17}
-            className="mt-0.5 shrink-0"
-          />
+          <AlertCircle size={17} className="mt-0.5 shrink-0" />
 
           <span>{error}</span>
 
@@ -986,10 +984,7 @@ export default function Media() {
       {/* SUCCESS */}
       {message && (
         <div className="flex items-start gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-          <CheckCircle2
-            size={17}
-            className="mt-0.5 shrink-0"
-          />
+          <CheckCircle2 size={17} className="mt-0.5 shrink-0" />
 
           <span>{message}</span>
 

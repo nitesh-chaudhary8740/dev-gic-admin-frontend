@@ -16,13 +16,28 @@ import {
 
 import FormatFormModal from "./components/FormatFormModal";
 import DeleteConfirmModal from "./components/DeleteConfirmModal";
+
+// ======================================
+// API — mediaApi.js (shared)
+// ======================================
 import {
-  MEDIA_API,
-  apiRequest,
-  getFormats,
-  inputClass,
-  bytesToHuman,
-} from "./utils/mediaHelpers";
+  getMediaFormats,
+  updateMediaFormatStatus,
+} from "../../api/mediaApi";
+
+// ======================================
+// API — mediaFormatApi.js (format CRUD)
+// ======================================
+import {
+  createMediaFormat,
+  updateMediaFormat,
+  deleteMediaFormat,
+} from "../../api/mediaFormatApi";
+
+// ======================================
+// UTILITIES
+// ======================================
+import { getFormats, inputClass, bytesToHuman } from "./utils/mediaHelpers";
 
 export default function MediaFormats() {
   const navigate = useNavigate();
@@ -52,11 +67,15 @@ export default function MediaFormats() {
     setLoading(true);
     setError("");
     try {
-      const response = await apiRequest(`${MEDIA_API}/formats`);
+      const response = await getMediaFormats();
       setFormats(getFormats(response));
     } catch (err) {
       setFormats([]);
-      setError(err.message || "Unable to load formats.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Unable to load formats."
+      );
     } finally {
       setLoading(false);
     }
@@ -84,7 +103,7 @@ export default function MediaFormats() {
   }, [formats, search, categoryFilter]);
 
   // ======================================
-  // CATEGORIES (dynamic from data)
+  // CATEGORIES
   // ======================================
   const categories = useMemo(() => {
     const set = new Set(formats.map((f) => f.category));
@@ -117,24 +136,18 @@ export default function MediaFormats() {
 
     try {
       if (formMode === "edit" && editingFormat) {
-        await apiRequest(`${MEDIA_API}/formats/${editingFormat.id}`, {
-          method: "PUT",
-          body: JSON.stringify({
-            mimeTypes: payload.mimeTypes,
-            category: payload.category,
-            allowedSize: payload.allowedSize,
-          }),
+        await updateMediaFormat(editingFormat.id, {
+          mimeTypes: payload.mimeTypes,
+          category: payload.category,
+          allowedSize: payload.allowedSize,
         });
         setMessage("Format updated successfully.");
       } else {
-        await apiRequest(`${MEDIA_API}/formats`, {
-          method: "POST",
-          body: JSON.stringify({
-            extension: payload.extension,
-            mimeTypes: payload.mimeTypes,
-            category: payload.category,
-            allowedSize: payload.allowedSize,
-          }),
+        await createMediaFormat({
+          extension: payload.extension,
+          mimeTypes: payload.mimeTypes,
+          category: payload.category,
+          allowedSize: payload.allowedSize,
         });
         setMessage("Format created successfully.");
       }
@@ -143,7 +156,11 @@ export default function MediaFormats() {
       setEditingFormat(null);
       await loadFormats();
     } catch (err) {
-      setError(err.message || "Unable to save format.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Unable to save format."
+      );
     } finally {
       setSaving(false);
     }
@@ -156,19 +173,24 @@ export default function MediaFormats() {
     setTogglingId(format.id);
     setError("");
     setMessage("");
+
     try {
-      await apiRequest(`${MEDIA_API}/formats/${format.id}/status`, {
-        method: "PATCH",
-        body: JSON.stringify({ isAllowed: !format.isAllowed }),
-      });
+      const newStatus = !format.isAllowed;
+
+      await updateMediaFormatStatus(format.id, newStatus);
       await loadFormats();
+
       setMessage(
         `${format.extension.toUpperCase()} ${
-          format.isAllowed ? "disabled" : "enabled"
+          newStatus ? "enabled" : "disabled"
         }.`
       );
     } catch (err) {
-      setError(err.message || "Unable to update status.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Unable to update status."
+      );
     } finally {
       setTogglingId(null);
     }
@@ -182,15 +204,18 @@ export default function MediaFormats() {
     setDeleting(true);
     setError("");
     setMessage("");
+
     try {
-      await apiRequest(`${MEDIA_API}/formats/${deleteTarget.id}`, {
-        method: "DELETE",
-      });
+      await deleteMediaFormat(deleteTarget.id);
       setMessage(`Format ".${deleteTarget.extension}" deleted.`);
       setDeleteTarget(null);
       await loadFormats();
     } catch (err) {
-      setError(err.message || "Unable to delete format.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Unable to delete format."
+      );
     } finally {
       setDeleting(false);
     }
@@ -205,7 +230,7 @@ export default function MediaFormats() {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => navigate("/media")}
+            onClick={() => navigate("/admin/media")}
             className="rounded-lg border border-slate-200 p-2 text-slate-600 hover:bg-slate-50"
             title="Back to Media"
           >
@@ -334,7 +359,9 @@ export default function MediaFormats() {
                   <th className="px-5 py-3 font-semibold">Allowed size</th>
                   <th className="px-5 py-3 font-semibold">MIME types</th>
                   <th className="px-5 py-3 font-semibold">Status</th>
-                  <th className="px-5 py-3 text-right font-semibold">Actions</th>
+                  <th className="px-5 py-3 text-right font-semibold">
+                    Actions
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">

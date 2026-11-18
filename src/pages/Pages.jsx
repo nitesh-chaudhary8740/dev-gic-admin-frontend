@@ -16,42 +16,20 @@ import {
   Globe2,
 } from "lucide-react";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://192.168.1.194:3000";
+// ======================================
+// API
+// ======================================
+import { getPages, createPage, updatePage, deletePage } from "../api/pageApi";
+import { getMenus } from "../api/menuApi";
+import { getLanguages } from "../api/languageApi";
 
+// ======================================
+// HELPERS
+// ======================================
 const EMPTY_FORM = {
   content: "",
   isPublished: false,
 };
-
-async function apiRequest(endpoint, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-  const text = await response.text();
-  let result = null;
-
-  try {
-    result = text ? JSON.parse(text) : null;
-  } catch {
-    result = text;
-  }
-
-  if (!response.ok) {
-    throw new Error(
-      result?.message ||
-        result?.error ||
-        (typeof result === "string" ? result : `API error: ${response.status}`)
-    );
-  }
-
-  return result;
-}
 
 function getArrayData(result, key) {
   if (Array.isArray(result)) return result;
@@ -74,18 +52,12 @@ function getParentId(menu) {
 
 function getTranslation(menu, languageId) {
   return (menu?.translations ?? []).find((translation) =>
-    sameId(
-      translation.languageId ?? translation.language?.id,
-      languageId
-    )
+    sameId(translation.languageId ?? translation.language?.id, languageId)
   );
 }
 
 function getTranslationTitle(menu, languageId) {
-  return (
-    getTranslation(menu, languageId)?.menuTitle ||
-    `Menu #${getId(menu)}`
-  );
+  return getTranslation(menu, languageId)?.menuTitle || `Menu #${getId(menu)}`;
 }
 
 function getPageTranslationId(page) {
@@ -105,14 +77,24 @@ function getMenuPath(menu, menus) {
     path.unshift(String(id));
 
     const parentId = getParentId(current);
-    current = parentId == null
-      ? null
-      : menus.find((item) => sameId(getId(item), parentId));
+    current =
+      parentId == null
+        ? null
+        : menus.find((item) => sameId(getId(item), parentId));
   }
 
   return path;
 }
 
+const extractErrorMessage = (err, fallback = "Request failed.") =>
+  err?.response?.data?.message ||
+  err?.response?.data?.error ||
+  err?.message ||
+  fallback;
+
+// ======================================
+// COMPONENT
+// ======================================
 export default function Pages() {
   const [menus, setMenus] = useState([]);
   const [languages, setLanguages] = useState([]);
@@ -131,15 +113,18 @@ export default function Pages() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
+  // ======================================
+  // LOAD DATA
+  // ======================================
   const loadData = useCallback(async () => {
     setLoading(true);
     setError("");
 
     try {
       const [menuResult, languageResult, pageResult] = await Promise.all([
-        apiRequest("/api/menus"),
-        apiRequest("/api/languages"),
-        apiRequest("/api/pages"),
+        getMenus(),
+        getLanguages(),
+        getPages(),
       ]);
 
       const nextMenus = getArrayData(menuResult, "menus");
@@ -150,9 +135,11 @@ export default function Pages() {
       setLanguages(nextLanguages);
       setPages(nextPages);
 
-      // Default language prefer karo (isDefault = true)
       setLanguageId((current) => {
-        if (current && nextLanguages.some((l) => sameId(getId(l), current))) {
+        if (
+          current &&
+          nextLanguages.some((l) => sameId(getId(l), current))
+        ) {
           return current;
         }
         const defaultLanguage =
@@ -163,7 +150,7 @@ export default function Pages() {
         return defaultLanguage ? String(getId(defaultLanguage)) : "";
       });
     } catch (err) {
-      setError(err.message || "Pages load nahi ho paaye.");
+      setError(extractErrorMessage(err, "Pages load nahi ho paaye."));
     } finally {
       setLoading(false);
     }
@@ -173,6 +160,9 @@ export default function Pages() {
     loadData();
   }, [loadData]);
 
+  // ======================================
+  // DERIVED STATE
+  // ======================================
   const selectedMenuIds = menuPath.filter(Boolean);
   const selectedMenuId = selectedMenuIds.at(-1) || "";
 
@@ -182,9 +172,7 @@ export default function Pages() {
   );
 
   const selectedTranslation = useMemo(
-    () => selectedMenu
-      ? getTranslation(selectedMenu, languageId)
-      : null,
+    () => (selectedMenu ? getTranslation(selectedMenu, languageId) : null),
     [selectedMenu, languageId]
   );
 
@@ -193,9 +181,10 @@ export default function Pages() {
     : "";
 
   const existingPage = useMemo(
-    () => pages.find((page) =>
-      sameId(getPageTranslationId(page), selectedTranslationId)
-    ),
+    () =>
+      pages.find((page) =>
+        sameId(getPageTranslationId(page), selectedTranslationId)
+      ),
     [pages, selectedTranslationId]
   );
 
@@ -237,6 +226,9 @@ export default function Pages() {
     setMessage("");
   }, [selectedTranslationId, existingPage]);
 
+  // ======================================
+  // HANDLERS
+  // ======================================
   const chooseMenu = (level, value) => {
     setMenuPath((current) => {
       const next = [...current];
@@ -294,22 +286,16 @@ export default function Pages() {
 
     try {
       if (editingPageId != null) {
-        await apiRequest(`/api/pages/${editingPageId}`, {
-          method: "PATCH",
-          body: JSON.stringify(payload),
-        });
+        await updatePage(editingPageId, payload);
         setMessage("Page successfully update ho gaya.");
       } else {
-        await apiRequest("/api/pages", {
-          method: "POST",
-          body: JSON.stringify(payload),
-        });
+        await createPage(payload);
         setMessage("Page successfully create ho gaya.");
       }
 
       await loadData();
     } catch (err) {
-      setError(err.message || "Page save nahi ho paya.");
+      setError(extractErrorMessage(err, "Page save nahi ho paya."));
     } finally {
       setSaving(false);
     }
@@ -336,11 +322,12 @@ export default function Pages() {
       return;
     }
 
-    setLanguageId(String(
-      matchedTranslation.languageId ?? matchedTranslation.language?.id
-    ));
+    setLanguageId(
+      String(
+        matchedTranslation.languageId ?? matchedTranslation.language?.id
+      )
+    );
 
-    // Menu path restore karo (sirf selected IDs, extra empty nahi)
     const path = getMenuPath(matchedMenu, menus);
     const paddedPath = [...path, "", "", "", ""].slice(0, 4);
     setMenuPath(paddedPath);
@@ -361,16 +348,17 @@ export default function Pages() {
     }
 
     try {
-      await apiRequest(`/api/pages/${getId(page)}`, {
-        method: "DELETE",
-      });
+      await deletePage(getId(page));
       setMessage("Page delete ho gaya.");
       await loadData();
     } catch (err) {
-      setError(err.message || "Page delete nahi ho paya.");
+      setError(extractErrorMessage(err, "Page delete nahi ho paya."));
     }
   };
 
+  // ======================================
+  // LOOKUPS
+  // ======================================
   const translationLookup = useMemo(() => {
     const map = new Map();
 
@@ -409,13 +397,17 @@ export default function Pages() {
         language?.name,
         language?.displayName,
         language?.code,
-      ].join(" ").toLowerCase();
+      ]
+        .join(" ")
+        .toLowerCase();
 
       return searchableText.includes(query);
     });
   }, [pages, translationLookup, languages, search]);
 
-  // Preview document - iframe ke andar full HTML document
+  // ======================================
+  // PREVIEW
+  // ======================================
   const previewDocument = `<!doctype html>
 <html>
 <head>
@@ -439,6 +431,9 @@ export default function Pages() {
 
   const defaultLanguage = languages.find((l) => l.isDefault);
 
+  // ======================================
+  // UI
+  // ======================================
   return (
     <div className="space-y-6">
       <header className="flex flex-wrap items-center justify-between gap-4">
@@ -448,7 +443,8 @@ export default function Pages() {
             <h1 className="text-2xl font-bold text-slate-900">Pages</h1>
           </div>
           <p className="mt-1 text-sm text-slate-500">
-            Menu hierarchy select karke language-specific HTML content manage karein.
+            Menu hierarchy select karke language-specific HTML content manage
+            karein.
           </p>
         </div>
 
@@ -464,7 +460,10 @@ export default function Pages() {
       </header>
 
       {error && (
-        <div role="alert" className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+        >
           <AlertCircle size={18} className="mt-0.5 shrink-0" />
           <span>{error}</span>
         </div>
@@ -550,13 +549,20 @@ export default function Pages() {
                 Selected menu
               </p>
               <p className="mt-1 font-semibold text-slate-900 flex items-center gap-2 flex-wrap">
-                {selectedMenuIds.map((id) => {
-                  const menu = menus.find((item) => sameId(getId(item), id));
-                  return getTranslationTitle(menu, languageId);
-                }).join("  /  ")}
+                {selectedMenuIds
+                  .map((id) => {
+                    const menu = menus.find((item) =>
+                      sameId(getId(item), id)
+                    );
+                    return getTranslationTitle(menu, languageId);
+                  })
+                  .join("  /  ")}
                 {selectedMenu.isDefault && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700">
-                    <Star size={10} className="fill-amber-500 text-amber-500" />
+                    <Star
+                      size={10}
+                      className="fill-amber-500 text-amber-500"
+                    />
                     Home
                   </span>
                 )}
@@ -568,11 +574,13 @@ export default function Pages() {
               </p>
             </div>
 
-            <span className={`rounded-full px-3 py-1 text-xs font-semibold ${
-              existingPage
-                ? "bg-emerald-100 text-emerald-700"
-                : "bg-amber-100 text-amber-800"
-            }`}>
+            <span
+              className={`rounded-full px-3 py-1 text-xs font-semibold ${
+                existingPage
+                  ? "bg-emerald-100 text-emerald-700"
+                  : "bg-amber-100 text-amber-800"
+              }`}
+            >
               {existingPage ? "Existing page" : "New page"}
             </span>
           </div>
@@ -592,7 +600,8 @@ export default function Pages() {
 
         {selectedMenu && !selectedTranslation && (
           <p className="text-sm text-amber-700">
-            Is menu ki selected language translation missing hai. Pehle Menus page par translation add karein.
+            Is menu ki selected language translation missing hai. Pehle Menus
+            page par translation add karein.
           </p>
         )}
       </section>
@@ -631,7 +640,9 @@ export default function Pages() {
               className="admin-input min-h-80 resize-y font-mono text-sm"
             />
             <p className="mt-2 text-xs text-slate-500">
-              HTML source yahan edit karein. Full HTML document (with &lt;style&gt;, &lt;script&gt;) bhi paste kar sakte hain — preview iframe mein render hoga.
+              HTML source yahan edit karein. Full HTML document (with
+              &lt;style&gt;, &lt;script&gt;) bhi paste kar sakte hain — preview
+              iframe mein render hoga.
             </p>
           </div>
 
@@ -662,10 +673,16 @@ export default function Pages() {
               disabled={saving || loading || !selectedTranslation}
               className="admin-button-primary inline-flex items-center gap-2"
             >
+              {saving ? (
+                <LoaderCircle size={17} className="animate-spin" />
+              ) : (
+                <Save size={17} />
+              )}
               {saving
-                ? <LoaderCircle size={17} className="animate-spin" />
-                : <Save size={17} />}
-              {saving ? "Saving..." : editingPageId != null ? "Update Page" : "Create Page"}
+                ? "Saving..."
+                : editingPageId != null
+                ? "Update Page"
+                : "Create Page"}
             </button>
 
             <button
@@ -697,21 +714,27 @@ export default function Pages() {
             </select>
           </div>
 
-          <div className={`mx-auto overflow-hidden rounded-xl border border-slate-200 bg-white ${
-            previewMode === "mobile" ? "max-w-sm" : "w-full"
-          }`}>
+          <div
+            className={`mx-auto overflow-hidden rounded-xl border border-slate-200 bg-white ${
+              previewMode === "mobile" ? "max-w-sm" : "w-full"
+            }`}
+          >
             <iframe
               title="HTML content preview"
               srcDoc={previewDocument}
-              // sandbox="allow-scripts" -> animation/script chalega, parent safe rahega
-              // sandbox="" -> script block, sirf static preview
               sandbox="allow-scripts"
               className="h-[520px] w-full bg-white"
             />
           </div>
           <p className="text-xs text-slate-500 flex items-start gap-1.5">
             <Globe2 size={12} className="mt-0.5 shrink-0" />
-            Preview sandboxed hai (<code className="bg-slate-100 px-1 rounded">allow-scripts</code> without <code className="bg-slate-100 px-1 rounded">allow-same-origin</code>) — scripts chalenge lekin parent panel safe rahega.
+            Preview sandboxed hai (
+            <code className="bg-slate-100 px-1 rounded">allow-scripts</code>{" "}
+            without{" "}
+            <code className="bg-slate-100 px-1 rounded">
+              allow-same-origin
+            </code>
+            ) — scripts chalenge lekin parent panel safe rahega.
           </p>
         </section>
       </section>
@@ -721,7 +744,8 @@ export default function Pages() {
           <div>
             <h2 className="text-lg font-semibold">Existing Pages</h2>
             <p className="mt-1 text-sm text-slate-500">
-              Kisi page ko edit karne par uski language aur menu path restore ho jayega.
+              Kisi page ko edit karne par uski language aur menu path restore ho
+              jayega.
             </p>
           </div>
           <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-600">
@@ -730,7 +754,10 @@ export default function Pages() {
         </div>
 
         <div className="relative mb-4 max-w-md">
-          <Search size={17} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <Search
+            size={17}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+          />
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
@@ -775,32 +802,42 @@ export default function Pages() {
                     <tr key={getId(page)}>
                       <td>
                         <div className="font-medium text-slate-900 flex items-center gap-2">
-                          {linked?.translation.menuTitle || `Page #${getId(page)}`}
+                          {linked?.translation.menuTitle ||
+                            `Page #${getId(page)}`}
                           {linked?.menu?.isDefault && (
                             <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-medium text-amber-700">
-                              <Star size={9} className="fill-amber-500 text-amber-500" />
+                              <Star
+                                size={9}
+                                className="fill-amber-500 text-amber-500"
+                              />
                               Home
                             </span>
                           )}
                         </div>
                         <div className="mt-1 text-xs text-slate-500">
-                          {linked ? `Menu ID: ${getId(linked.menu)}` : `Translation ID: ${getPageTranslationId(page)}`}
+                          {linked
+                            ? `Menu ID: ${getId(linked.menu)}`
+                            : `Translation ID: ${getPageTranslationId(page)}`}
                         </div>
                       </td>
                       <td>
                         {language
-                          ? `${language.displayName || language.name} (${language.code})`
+                          ? `${language.displayName || language.name} (${
+                              language.code
+                            })`
                           : "Unknown"}
                       </td>
                       <td className="max-w-52 truncate font-mono text-xs">
                         {linked?.translation.menuURL || "—"}
                       </td>
                       <td>
-                        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
-                          page.isPublished
-                            ? "bg-emerald-100 text-emerald-700"
-                            : "bg-slate-100 text-slate-600"
-                        }`}>
+                        <span
+                          className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                            page.isPublished
+                              ? "bg-emerald-100 text-emerald-700"
+                              : "bg-slate-100 text-slate-600"
+                          }`}
+                        >
                           {page.isPublished ? "Published" : "Draft"}
                         </span>
                       </td>
@@ -830,7 +867,10 @@ export default function Pages() {
 
                 {filteredPages.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="py-12 text-center text-sm text-slate-500">
+                    <td
+                      colSpan={5}
+                      className="py-12 text-center text-sm text-slate-500"
+                    >
                       Koi page nahi mila.
                     </td>
                   </tr>

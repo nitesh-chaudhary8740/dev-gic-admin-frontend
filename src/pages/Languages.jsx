@@ -14,8 +14,16 @@ import {
   Star,
 } from "lucide-react";
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://192.168.1.194:3000";
+// ======================================
+// API — languageApi.js
+// ======================================
+import {
+  getLanguages,
+  createLanguage,
+  updateLanguage,
+  toggleLanguagePublish,
+  setDefaultLanguage,
+} from "../api/languageApi"; // ← apne folder structure ke hisaab se path adjust karo
 
 const EMPTY_FORM = {
   name: "",
@@ -25,32 +33,9 @@ const EMPTY_FORM = {
   isDefault: false,
 };
 
-async function apiRequest(endpoint, options = {}) {
-  const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-    ...options,
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-  });
-
-  const contentType = response.headers.get("content-type") || "";
-  const result = contentType.includes("application/json")
-    ? await response.json()
-    : await response.text();
-
-  if (!response.ok) {
-    throw new Error(
-      typeof result === "object"
-        ? result.message || "Request failed."
-        : result || "Request failed."
-    );
-  }
-
-  return result;
-}
-
+// ======================================
+// HELPERS
+// ======================================
 function getArrayData(response) {
   if (Array.isArray(response)) return response;
   if (Array.isArray(response?.data)) return response.data;
@@ -78,15 +63,22 @@ function Languages() {
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
+  // ======================================
+  // LOAD
+  // ======================================
   const loadLanguages = useCallback(async () => {
     setLoading(true);
     setError("");
 
     try {
-      const response = await apiRequest("/api/languages");
+      const response = await getLanguages();
       setLanguages(getArrayData(response));
     } catch (err) {
-      setError(err.message || "Languages load nahi ho paayin.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Languages load nahi ho paayin."
+      );
     } finally {
       setLoading(false);
     }
@@ -94,11 +86,13 @@ function Languages() {
 
   useEffect(() => {
     loadLanguages();
-  }, [loadLanguages]);
+  }, []);
 
+  // ======================================
+  // FILTER / SUMMARY
+  // ======================================
   const filteredLanguages = useMemo(() => {
     const query = search.trim().toLowerCase();
-
     if (!query) return languages;
 
     return languages.filter(
@@ -109,12 +103,12 @@ function Languages() {
     );
   }, [languages, search]);
 
-  const publishedCount = languages.filter(
-    (language) => language.isPublished
-  ).length;
-
+  const publishedCount = languages.filter((l) => l.isPublished).length;
   const defaultLanguage = languages.find((l) => l.isDefault);
 
+  // ======================================
+  // FORM ACTIONS
+  // ======================================
   const resetForm = () => {
     setForm(EMPTY_FORM);
     setEditingId(null);
@@ -147,28 +141,24 @@ function Languages() {
       return;
     }
 
-    const payload = {
-      name: form.name.trim(),
-      code: form.code.trim(),
-      displayName: form.displayName.trim(),
-      isPublished: form.isPublished,
-      // isDefault update ke waqt nahi bhejenge, alag endpoint hai
-      ...(editingId === null ? { isDefault: form.isDefault } : {}),
-    };
-
     setSaving(true);
 
     try {
       if (editingId !== null) {
-        await apiRequest(`/api/languages/${editingId}`, {
-          method: "PUT",
-          body: JSON.stringify(payload),
+        await updateLanguage(editingId, {
+          name: form.name.trim(),
+          code: form.code.trim(),
+          displayName: form.displayName.trim(),
+          isPublished: form.isPublished,
         });
         setMessage("Language successfully update ho gayi.");
       } else {
-        await apiRequest("/api/languages", {
-          method: "POST",
-          body: JSON.stringify(payload),
+        await createLanguage({
+          name: form.name.trim(),
+          code: form.code.trim(),
+          displayName: form.displayName.trim(),
+          isPublished: form.isPublished,
+          isDefault: form.isDefault,
         });
         setMessage("Language successfully create ho gayi.");
       }
@@ -178,12 +168,19 @@ function Languages() {
       setShowForm(false);
       await loadLanguages();
     } catch (err) {
-      setError(err.message || "Language save nahi ho paayi.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Language save nahi ho paayi."
+      );
     } finally {
       setSaving(false);
     }
   };
 
+  // ======================================
+  // PUBLISH TOGGLE
+  // ======================================
   const handleTogglePublish = async (language) => {
     const id = getLanguageId(language);
 
@@ -197,26 +194,27 @@ function Languages() {
     setTogglingId(id);
 
     try {
-      const action = language.isPublished ? "unpublish" : "publish";
-
-      await apiRequest(`/api/languages/${id}/${action}`, {
-        method: "PATCH",
-      });
+      await toggleLanguagePublish(id, language.isPublished);
 
       setMessage(
-        language.isPublished
-          ? "Language unpublished."
-          : "Language published."
+        language.isPublished ? "Language unpublished." : "Language published."
       );
 
       await loadLanguages();
     } catch (err) {
-      setError(err.message || "Language status update nahi hua.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Language status update nahi hua."
+      );
     } finally {
       setTogglingId(null);
     }
   };
 
+  // ======================================
+  // SET DEFAULT
+  // ======================================
   const handleSetDefault = async (language) => {
     const id = getLanguageId(language);
 
@@ -235,19 +233,24 @@ function Languages() {
     setSettingDefaultId(id);
 
     try {
-      await apiRequest(`/api/languages/${id}/set-default`, {
-        method: "PATCH",
-      });
+      await setDefaultLanguage(id);
 
       setMessage(`"${language.name}" ab default language hai.`);
       await loadLanguages();
     } catch (err) {
-      setError(err.message || "Default language set nahi ho payi.");
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Default language set nahi ho payi."
+      );
     } finally {
       setSettingDefaultId(null);
     }
   };
 
+  // ======================================
+  // UI
+  // ======================================
   return (
     <div className="mx-auto max-w-7xl space-y-6">
       {/* Page heading */}
@@ -364,10 +367,14 @@ function Languages() {
             <Star size={19} className="text-amber-500" />
           </div>
           <p className="mt-3 text-2xl font-semibold text-slate-900">
-            {defaultLanguage ? defaultLanguage.displayName || defaultLanguage.name : "—"}
+            {defaultLanguage
+              ? defaultLanguage.displayName || defaultLanguage.name
+              : "—"}
           </p>
           <p className="mt-1 text-xs text-slate-400">
-            {defaultLanguage ? `Code: ${defaultLanguage.code}` : "No default set"}
+            {defaultLanguage
+              ? `Code: ${defaultLanguage.code}`
+              : "No default set"}
           </p>
         </div>
       </div>
@@ -540,8 +547,8 @@ function Languages() {
                 {saving
                   ? "Saving..."
                   : editingId !== null
-                    ? "Save changes"
-                    : "Create language"}
+                  ? "Save changes"
+                  : "Create language"}
               </button>
             </div>
           </form>
@@ -633,11 +640,16 @@ function Languages() {
                       <td className="px-5 py-4">
                         <div className="flex items-center gap-3">
                           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-sm font-semibold uppercase text-slate-600">
-                            {(language.displayName || language.name || "?").slice(0, 2)}
+                            {(language.displayName || language.name || "?").slice(
+                              0,
+                              2
+                            )}
                           </div>
                           <div>
                             <p className="text-sm font-medium text-slate-800">
-                              {language.displayName || language.name || "Unnamed language"}
+                              {language.displayName ||
+                                language.name ||
+                                "Unnamed language"}
                             </p>
                             <p className="mt-0.5 text-xs text-slate-400">
                               {language.name} {id != null && `· ID: ${id}`}
@@ -674,7 +686,10 @@ function Languages() {
                       <td className="px-5 py-4">
                         {isDefault ? (
                           <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
-                            <Star size={12} className="fill-amber-500 text-amber-500" />
+                            <Star
+                              size={12}
+                              className="fill-amber-500 text-amber-500"
+                            />
                             Default
                           </span>
                         ) : (
@@ -683,7 +698,11 @@ function Languages() {
                             onClick={() => handleSetDefault(language)}
                             disabled={isSettingDefault || !isPublished}
                             className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs font-medium text-slate-600 transition hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700 disabled:cursor-not-allowed disabled:opacity-50"
-                            title={!isPublished ? "Publish first to set as default" : "Set as default"}
+                            title={
+                              !isPublished
+                                ? "Publish first to set as default"
+                                : "Set as default"
+                            }
                           >
                             {isSettingDefault ? (
                               <RefreshCw size={12} className="animate-spin" />
@@ -710,18 +729,20 @@ function Languages() {
                           <button
                             type="button"
                             title={isPublished ? "Unpublish" : "Publish"}
-                            disabled={isToggling || id == null || (isPublished && isDefault)}
+                            disabled={
+                              isToggling ||
+                              id == null ||
+                              (isPublished && isDefault)
+                            }
                             onClick={() => handleTogglePublish(language)}
                             className="rounded-lg p-2 text-slate-500 transition hover:bg-emerald-50 hover:text-emerald-700 disabled:opacity-40"
                           >
                             {isToggling ? (
                               <RefreshCw size={16} className="animate-spin" />
+                            ) : isPublished ? (
+                              <CircleDashed size={17} />
                             ) : (
-                              isPublished ? (
-                                <CircleDashed size={17} />
-                              ) : (
-                                <CheckCircle2 size={17} />
-                              )
+                              <CheckCircle2 size={17} />
                             )}
                           </button>
                         </div>
